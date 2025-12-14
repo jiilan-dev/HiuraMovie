@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: backend-postgres
+    container_name: hiuramovie-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -19,7 +19,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: backend-redis
+    container_name: hiuramovie-redis
     restart: unless-stopped
     command: redis-server --appendonly yes
     ports:
@@ -34,7 +34,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: backend-minio
+    container_name: hiuramovie-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
