@@ -1,4 +1,4 @@
-use super::dto::{LoginRequest, RegisterRequest, TokenClaims};
+use super::dto::{LoginRequest, RegisterRequest, TokenClaims, AuthResponse, UserResponse};
 use super::service::AuthService;
 use crate::state::AppState;
 use crate::common::response::{ApiResponse, ApiSuccess, ApiError};
@@ -51,9 +51,8 @@ pub async fn login(
         Ok((response, refresh_token)) => {
             let mut cookie = Cookie::new("refresh_token", refresh_token);
             cookie.set_http_only(true);
-            cookie.set_path("/auth/refresh");
-            cookie.set_secure(true); // Should be true in production
-            cookie.set_top_level_domain(".localhost".to_string()); // Adjust domain as needed
+            cookie.set_path("/api/v1/auth"); // Allow access for refresh AND logout
+             cookie.set_secure(false); // Keep false for HTTP localhost
             // Expiry 7 days
              cookie.set_max_age(Some(time::Duration::days(7)));
 
@@ -70,7 +69,8 @@ pub async fn login(
     post,
     path = "/api/v1/auth/logout",
     responses(
-        (status = 200, description = "Logged out successfully", body = ApiResponse<()>),
+        // Using String instead of () to avoid TypeTree panic
+        (status = 200, description = "Logged out successfully", body = ApiResponse<String>),
         (status = 401, description = "Unauthorized")
     ),
     security(
@@ -101,7 +101,7 @@ pub async fn logout(
 
     // 3. Clear Cookie
     let mut cookie = Cookie::new("refresh_token", "");
-    cookie.set_path("/auth/refresh");
+    cookie.set_path("/api/v1/auth");
     cookies.remove(cookie);
     
     ApiSuccess(ApiResponse::success((), "Logged out successfully"), StatusCode::OK).into_response()
@@ -127,10 +127,13 @@ pub async fn refresh(
         Some(c) => c.value().to_string(),
         None => return ApiError("Missing refresh token".to_string(), StatusCode::UNAUTHORIZED).into_response(),
     };
+
+    tracing::info!("Refresh request received with token: {}", refresh_token); // Log the token!
     
     // Parse user_id from token "user_id:uuid"
     let parts: Vec<&str> = refresh_token.split(':').collect();
     if parts.len() != 2 {
+        tracing::error!("Invalid token format: {}", refresh_token);
         return ApiError("Invalid token format".to_string(), StatusCode::UNAUTHORIZED).into_response();
     }
     
@@ -140,7 +143,18 @@ pub async fn refresh(
     };
 
     match AuthService::refresh_access(state, refresh_token, user_id).await {
-        Ok(response) => ApiSuccess(ApiResponse::success(response, "Token refreshed"), StatusCode::OK).into_response(),
+        Ok((response, new_refresh_token)) => {
+             let mut cookie = Cookie::new("refresh_token", new_refresh_token);
+            cookie.set_http_only(true);
+            cookie.set_path("/api/v1/auth"); // Allow access for refresh AND logout
+             cookie.set_secure(false); // Keep false for HTTP localhost
+            // Expiry 7 days
+             cookie.set_max_age(Some(time::Duration::days(7)));
+
+            cookies.add(cookie);
+
+            ApiSuccess(ApiResponse::success(response, "Token refreshed"), StatusCode::OK).into_response()
+        },
         Err(e) => ApiError(e.to_string(), StatusCode::UNAUTHORIZED).into_response(),
     }
 }

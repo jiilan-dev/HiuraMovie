@@ -37,7 +37,7 @@ pub struct UserResponse {
     pub role: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenClaims {
     pub sub: Uuid,
     pub role: String,

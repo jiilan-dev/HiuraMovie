@@ -18,7 +18,8 @@ use crate::modules::auth::handler::*;
     ),
     security(
         ("bearer_auth" = [])
-    )
+    ),
+    modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;
 
@@ -26,7 +27,7 @@ pub struct ApiDoc;
 // Utoipa 4+ uses modifier for security schemes, let's stick to simple derive for now.
 // For Bearer auth:
 use utoipa::Modify;
-use utoipa::openapi::security::{SecurityScheme, HttpAuthScheme, HttpBuilder, SecuritySchemeType};
+use utoipa::openapi::security::{SecurityScheme, HttpAuthScheme, HttpBuilder};
 
 pub struct SecurityAddon;
 

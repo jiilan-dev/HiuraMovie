@@ -5,6 +5,7 @@ use crate::state::AppState;
 use crate::common::security;
 use anyhow::{anyhow, Result};
 use jsonwebtoken::{encode, get_current_timestamp, EncodingKey, Header};
+use redis::AsyncCommands;
 use time::Duration;
 use uuid::Uuid;
 
@@ -50,9 +51,14 @@ impl AuthService {
     }
 
     pub async fn login(state: AppState, req: LoginRequest) -> Result<(AuthResponse, String)> {
+        tracing::info!("Attempting login for email: {}", req.email);
+        
         let user = AuthRepository::find_user_by_email(&state.db, &req.email)
             .await?
-            .ok_or_else(|| anyhow!("Invalid credentials"))?;
+            .ok_or_else(|| {
+                tracing::warn!("Login failed: Email {} not found", req.email);
+                anyhow!("Invalid credentials")
+            })?;
 
         // Verify password
         security::verify_password(&req.password, &user.password_hash)
@@ -62,6 +68,7 @@ impl AuthService {
         let access_token = Self::create_access_token(user.id, user.role.clone())?;
         // Format: user_id:random_uuid
         let refresh_token = format!("{}:{}", user.id, Uuid::new_v4());
+        tracing::info!("Generated refresh token for user {}: {}", user.id, refresh_token);
 
         // Store refresh token in Redis (7 days)
         let mut redis_conn = state.redis.get_conn().await?;
@@ -101,26 +108,26 @@ impl AuthService {
         let mut redis_conn = state.redis.get_conn().await?;
         let key = format!("blocked_token:{}", token);
         // Use set_ex to blocking token with expiration
-        redis_conn.set_ex(key, "blocked", ttl).await?;
+        let _: () = redis_conn.set_ex(key, "blocked", ttl as u64).await?;
         Ok(())
     }
     
-    pub async fn refresh_access(state: AppState, refresh_token: String, user_id: Uuid) -> Result<AuthResponse> {
+    pub async fn refresh_access(state: AppState, refresh_token: String, user_id: Uuid) -> Result<(AuthResponse, String)> {
         let mut redis_conn = state.redis.get_conn().await?;
         
         // Verify token in Redis
         let stored_token = AuthRepository::get_refresh_token(&mut redis_conn, user_id).await?;
         if let Some(token) = stored_token {
             if token != refresh_token {
+                tracing::warn!("Refresh token reuse detected for user {}", user_id);
+                // Optional: Revoke usage if reuse detected (though logically we just reject here)
                 return Err(anyhow!("Invalid refresh token"));
             }
         } else {
             return Err(anyhow!("Refresh token expired or invalid"));
         }
         
-        // Get user to ensure role is up to date
-        // Note: In a real app we might cache user role in redis too to avoid DB hit on refresh
-        // For now, we query DB
+        // Get user info
              let user = sqlx::query_as!(
             crate::modules::auth::model::User,
             r#"
@@ -134,6 +141,18 @@ impl AuthService {
         .await?
         .ok_or(anyhow!("User not found"))?;
 
+        // Rotate Token
+        let new_refresh_token = format!("{}:{}", user.id, Uuid::new_v4());
+        tracing::info!("Rotated refresh token for user {}: {}", user.id, new_refresh_token);
+
+        AuthRepository::store_refresh_token(
+            &mut redis_conn,
+            user.id,
+            &new_refresh_token,
+            7 * 24 * 60 * 60,
+        )
+        .await?;
+
         let access_token = Self::create_access_token(user.id, user.role.clone())?;
         
         let user_response = UserResponse {
@@ -144,10 +163,13 @@ impl AuthService {
             role: user.role.to_string(),
         };
 
-        Ok(AuthResponse {
-            access_token,
-            user: user_response,
-        })
+        Ok((
+            AuthResponse {
+                access_token,
+                user: user_response,
+            },
+            new_refresh_token, // Return new token
+        ))
     }
 
     fn create_access_token(user_id: Uuid, role: UserRole) -> Result<String> {

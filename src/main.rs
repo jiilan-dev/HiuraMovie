@@ -20,7 +20,13 @@ use state::AppState;
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+    // tracing_subscriber::fmt::init(); // Replace this generic init
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "backend=debug,tower_http=debug,axum::rejection=trace".into()),
+        )
+        .init();
     
     info!("🚀 Initializing HiuraMovie Backend...");
 

@@ -1,5 +1,6 @@
 use crate::modules::auth::model::{User, UserRole};
 use anyhow::Result;
+use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -66,18 +67,18 @@ impl AuthRepository {
     }
 
     pub async fn store_refresh_token(
-        redis: &mut redis::aio::MultiplexedConnection,
+        redis: &mut MultiplexedConnection,
         user_id: Uuid,
         refresh_token: &str,
         ttl_seconds: usize,
     ) -> Result<()> {
         let key = format!("refresh_token:{}", user_id);
-        redis.set_ex(key, refresh_token, ttl_seconds).await?;
+        let _: () = redis.set_ex(key, refresh_token, ttl_seconds as u64).await?;
         Ok(())
     }
 
     pub async fn get_refresh_token(
-        redis: &mut redis::aio::MultiplexedConnection,
+        redis: &mut MultiplexedConnection,
         user_id: Uuid,
     ) -> Result<Option<String>> {
         let key = format!("refresh_token:{}", user_id);
@@ -86,11 +87,11 @@ impl AuthRepository {
     }
 
     pub async fn delete_refresh_token(
-        redis: &mut redis::aio::MultiplexedConnection,
+        redis: &mut MultiplexedConnection,
         user_id: Uuid,
     ) -> Result<()> {
         let key = format!("refresh_token:{}", user_id);
-        redis.del(key).await?;
+        let _: () = redis.del(key).await?;
         Ok(())
     }
 }
