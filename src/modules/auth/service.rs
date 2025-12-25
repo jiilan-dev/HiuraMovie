@@ -73,11 +73,12 @@ impl AuthService {
 
         // Store refresh token in Redis (7 days)
         let mut redis_conn = state.redis.get_conn().await?;
+        let refresh_ttl = 7 * 24 * 60 * 60; // 7 days in seconds
         AuthRepository::store_refresh_token(
             &mut redis_conn,
             user.id,
             &refresh_token,
-            7 * 24 * 60 * 60, // 7 days in seconds
+            refresh_ttl as usize,
         )
         .await?;
         
@@ -93,6 +94,8 @@ impl AuthService {
         Ok((
             AuthResponse {
                 access_token,
+                access_token_expires_in: 15 * 60,
+                refresh_token_expires_in: refresh_ttl,
                 user: user_response,
             },
             refresh_token,
@@ -146,11 +149,12 @@ impl AuthService {
         let new_refresh_token = format!("{}:{}", user.id, Uuid::new_v4());
         tracing::info!("Rotated refresh token for user {}: {}", user.id, new_refresh_token);
 
+        let refresh_ttl = 7 * 24 * 60 * 60;
         AuthRepository::store_refresh_token(
             &mut redis_conn,
             user.id,
             &new_refresh_token,
-            7 * 24 * 60 * 60,
+            refresh_ttl,
         )
         .await?;
 
@@ -168,6 +172,8 @@ impl AuthService {
         Ok((
             AuthResponse {
                 access_token,
+                access_token_expires_in: 15 * 60,
+                refresh_token_expires_in: refresh_ttl as u64,
                 user: user_response,
             },
             new_refresh_token, // Return new token
