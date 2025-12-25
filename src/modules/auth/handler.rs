@@ -158,3 +158,36 @@ pub async fn refresh(
         Err(e) => ApiError(e.to_string(), StatusCode::UNAUTHORIZED).into_response(),
     }
 }
+
+/// Get current user profile
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/me",
+    responses(
+        (status = 200, description = "User profile", body = ApiResponse<UserResponse>),
+        (status = 401, description = "Unauthorized")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "Auth"
+)]
+pub async fn get_me(
+    State(state): State<AppState>,
+    Extension(claims): Extension<TokenClaims>,
+) -> impl IntoResponse {
+    match super::repository::AuthRepository::find_user_by_id(&state.db, claims.sub).await {
+        Ok(Some(user)) => {
+            let user_response = UserResponse {
+                id: user.id,
+                email: user.email,
+                username: user.username,
+                full_name: user.full_name,
+                role: user.role.to_string(),
+            };
+            ApiSuccess(ApiResponse::success(user_response, "User profile retrieved"), StatusCode::OK).into_response()
+        }
+        Ok(None) => ApiError("User not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+        Err(e) => ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
+    }
+}

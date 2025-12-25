@@ -17,6 +17,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
 
     let protected_routes = Router::new()
         .route("/logout", post(handler::logout))
+        .route("/me", axum::routing::get(handler::get_me))
         .route_layer(middleware::from_fn_with_state(
             state,
             crate::middleware::auth::auth_middleware

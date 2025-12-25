@@ -66,6 +66,22 @@ impl AuthRepository {
         Ok(user)
     }
 
+    pub async fn find_user_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            SELECT id, username, email, full_name, role as "role: UserRole", password_hash, created_at, updated_at
+            FROM users
+            WHERE id = $1
+            "#,
+            id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(user)
+    }
+
     pub async fn store_refresh_token(
         redis: &mut MultiplexedConnection,
         user_id: Uuid,
