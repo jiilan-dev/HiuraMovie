@@ -29,9 +29,53 @@ impl StorageService {
 
         info!("✅ Connected to S3 (MinIO)");
         
-        Self {
+        let storage = Self {
             client,
             bucket: bucket.to_string(),
+        };
+
+        // Auto-create default bucket
+        if let Err(e) = storage.ensure_bucket_exists(bucket).await {
+            tracing::warn!("Failed to ensure bucket '{}' exists: {}", bucket, e);
+        }
+
+        // We can't access other buckets from arguments here easily unless we pass them or
+        // we rely on the caller to call ensure_bucket_exists.
+        // For now, let's just return storage and let main.rs call ensure for others, 
+        // OR we change the signature of new() to take a list of buckets?
+        // But main.rs calls this. Let's keep it simple and just return 'storage'.
+        // Wait, the user wants "auto create".
+        // Let's modify the signature of new to take additional buckets?
+        // Or better: Let's handle this in main.rs where we have full config access.
+        
+        storage
+    }
+
+    /// Ensure a specific bucket exists, create it if not
+    pub async fn ensure_bucket_exists(&self, bucket_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Check if bucket exists
+        let exists = self.client
+            .head_bucket()
+            .bucket(bucket_name)
+            .send()
+            .await;
+
+        match exists {
+            Ok(_) => {
+                info!("✅ Bucket '{}' exists", bucket_name);
+                Ok(())
+            }
+            Err(_) => {
+                // Bucket doesn't exist, create it
+                info!("🪣 Creating bucket '{}'...", bucket_name);
+                self.client
+                    .create_bucket()
+                    .bucket(bucket_name)
+                    .send()
+                    .await?;
+                info!("✅ Bucket '{}' created successfully", bucket_name);
+                Ok(())
+            }
         }
     }
 
@@ -108,5 +152,17 @@ impl StorageService {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn get_object(&self, key: &str) -> Result<Vec<u8>, aws_sdk_s3::Error> {
+        let result = self.client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await?;
+
+        let data = result.body.collect().await.map(|d| d.into_bytes().to_vec()).unwrap_or_default();
+        Ok(data)
     }
 }

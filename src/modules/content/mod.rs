@@ -15,13 +15,15 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
     let public_routes = Router::new()
         .route("/movies", axum::routing::get(handler::list_movies))
         .route("/movies/{id}", axum::routing::get(handler::get_movie))
-        .route("/movies/{id}/stream", axum::routing::get(stream_handler::stream_movie)) // Added
+        .route("/movies/{id}/stream", axum::routing::get(stream_handler::stream_movie))
+        .route("/movies/{id}/thumbnail", axum::routing::get(handler::get_movie_thumbnail))
         .route("/series", axum::routing::get(handler::list_series))
         .route("/series/{id}", axum::routing::get(handler::get_series));
 
     let protected_routes = Router::new()
         .route("/movies", post(handler::create_movie))
         .route("/movies/{id}/upload", post(handler::upload_movie_video))
+        .route("/movies/{id}/upload-thumbnail", post(handler::upload_movie_thumbnail))
         .route("/movies/{id}", axum::routing::put(handler::update_movie).delete(handler::delete_movie))
         
         .route("/series", post(handler::create_series))

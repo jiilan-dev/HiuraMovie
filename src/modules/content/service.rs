@@ -142,10 +142,7 @@ impl ContentService {
         })
     }
 
-    pub async fn complete_movie_upload(state: AppState, id: Uuid, video_url: String) -> Result<()> {
-        ContentRepository::update_movie_video_url(&state.db, id, &video_url).await?;
-        Ok(())
-    }
+
 
     // --- SEASONS & EPISODES ---
 
@@ -207,6 +204,34 @@ impl ContentService {
    // ... previous methods ...
 
     // --- MOVIE UPDATES ---
+    pub async fn complete_movie_upload(state: AppState, id: Uuid, video_key: String) -> Result<()> {
+        let video_url = video_key; // In a real app with CDN, this would be full URL. For now relative key.
+        
+        sqlx::query!(
+            "UPDATE movies SET video_url = $1, status = 'READY', updated_at = NOW() WHERE id = $2",
+            video_url,
+            id
+        )
+        .execute(&state.db)
+        .await?;
+        
+        Ok(())
+    }
+
+    pub async fn complete_movie_thumbnail_upload(state: AppState, id: Uuid, thumbnail_key: String) -> Result<()> {
+        // Thumbnail URL handling
+        let thumbnail_url = thumbnail_key;
+        
+        sqlx::query!(
+            "UPDATE movies SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2",
+            thumbnail_url,
+            id
+        )
+        .execute(&state.db)
+        .await?;
+        
+        Ok(())
+    }
     pub async fn update_movie(state: AppState, id: Uuid, req: UpdateMovieRequest) -> Result<MovieResponse> {
         let movie = ContentRepository::update_movie(
             &state.db,

@@ -98,8 +98,8 @@ pub async fn stream_to_s3(
     let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
 
     // Validate request mime
-    if !content_type.starts_with("video/") {
-        return Err(anyhow!("Invalid content type: only video/* allowed"));
+    if !content_type.starts_with("video/") && !content_type.starts_with("image/") {
+        return Err(anyhow!("Invalid content type: only video/* and image/* allowed"));
     }
 
     let mut uploader = MultipartUploader::new(storage, key.clone(), &content_type).await?;

@@ -51,6 +51,18 @@ async fn main() {
         &config.minio_secret_key,
     ).await;
 
+    // Ensure all required buckets exist
+    let buckets = vec![
+        &config.minio_bucket,
+        &config.minio_bucket_thumbnails,
+    ];
+    
+    for bucket in buckets {
+        if let Err(e) = storage_service.ensure_bucket_exists(bucket).await {
+            tracing::warn!("Failed to ensure bucket '{}' exists: {}", bucket, e);
+        }
+    }
+
     // 5. Create App State
     let state = AppState::new(config.clone(), db_pool, redis_service, storage_service);
 

@@ -253,6 +253,146 @@ pub async fn upload_movie_video(
     ApiError("No video field found in multipart request".to_string(), StatusCode::BAD_REQUEST).into_response()
 }
 
+/// Upload Movie Thumbnail
+/// Multipart upload to S3/MinIO (Thumbnails bucket)
+#[utoipa::path(
+    post,
+    path = "/api/v1/movies/{id}/upload-thumbnail",
+    params(
+        ("id" = Uuid, Path, description = "Movie ID")
+    ),
+    request_body(content = String, content_type = "multipart/form-data"), 
+    responses(
+        (status = 200, description = "Upload successful", body = ApiResponse<String>),
+        (status = 400, description = "Bad Request"),
+        (status = 404, description = "Movie not found"),
+        (status = 500, description = "Internal Server Error")
+    ),
+    tag = "Content",
+    security(("bearer_auth" = []))
+)]
+pub async fn upload_movie_thumbnail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    // 1. Check if movie exists
+    use crate::modules::content::repository::ContentRepository;
+    
+    let exists = ContentRepository::get_movie_by_id(&state.db, id).await;
+    match exists {
+        Ok(Some(_)) => {},
+        Ok(None) => return ApiError("Movie not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+        Err(e) => return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
+    }
+
+    // 2. Process Multipart
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+        
+        if name == "thumbnail" {
+            let file_name = field.file_name().unwrap_or("thumb.jpg").to_string();
+            info!("Starting thumbnail upload for movie {}: {}", id, file_name);
+
+            // Use thumbnails bucket and specific key path
+            // e.g. movies/{id}/thumbnail.jpg (preserve extension if possible, or force jpg/png)
+            let extension = std::path::Path::new(&file_name).extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let key = format!("movies/{}/thumbnail.{}", id, extension);
+            
+            // Switch storage bucket temporarily or use the configured thumbnails bucket
+            // Since StorageService is cloned with bucket config, we need a way to target the other bucket.
+            // Our StorageService struct has `bucket` field.
+            // We need to construct a new StorageService or modify it? 
+            // Better: helper method `put_object` that accepts bucket name?
+            // Current `stream_to_s3` uses `state.storage`.
+            // Let's modify `stream_to_s3` or create `stream_to_s3_bucket`.
+            
+            // Wait, strict types in `upload.rs`.
+            // Let's look at `upload.rs`.
+            // For now, let's assume we can clone storage and set bucket? No, bucket is public String but `client` is shared.
+            
+            let mut storage_for_thumb = state.storage.clone();
+            storage_for_thumb.bucket = state.config.minio_bucket_thumbnails.clone();
+
+            match stream_to_s3(&storage_for_thumb, field, key.clone()).await {
+                Ok(_url) => {
+                    // 3. Update DB
+                    // Store relative key but maybe prefixed with bucket? 
+                    // Or usually we allow frontend to guess or backend to serve it via proxy.
+                    // For now, save relative key.
+                    if let Err(e) = ContentService::complete_movie_thumbnail_upload(state.clone(), id, key).await {
+                         return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                    }
+
+                    return ApiSuccess(
+                        ApiResponse::success(_url, "Thumbnail uploaded successfully"),
+                        StatusCode::OK
+                    ).into_response();
+                },
+                Err(e) => {
+                    return ApiError(format!("Upload failed: {}", e), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+        }
+    }
+
+    ApiError("No thumbnail field found in multipart request".to_string(), StatusCode::BAD_REQUEST).into_response()
+}
+
+/// Get Movie Thumbnail
+/// Serves the thumbnail image from MinIO
+#[utoipa::path(
+    get,
+    path = "/api/v1/movies/{id}/thumbnail",
+    params(("id" = Uuid, Path, description = "Movie ID")),
+    responses(
+        (status = 200, description = "Success", body = Vec<u8>),
+        (status = 404, description = "Not Found")
+    ),
+    tag = "Content"
+)]
+pub async fn get_movie_thumbnail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    // 1. Get Movie and Thumbnail Key
+    use crate::modules::content::repository::ContentRepository;
+    
+    let movie_opt = ContentRepository::get_movie_by_id(&state.db, id).await.unwrap_or(None);
+    let movie = match movie_opt {
+        Some(m) => m,
+        None => return ApiError("Movie not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    let key = match movie.thumbnail_url {
+        Some(k) => k,
+        None => return ApiError("Movie has no thumbnail".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    // 2. Fetch from MinIO (Thumbs bucket)
+    // We need to use the thumbnails bucket.
+    // Assuming `state.storage.get_object` uses `self.bucket`.
+    // We need to target the thumbnails bucket.
+    
+    // Either method on StorageService to override bucket, or clone.
+    // Let's create `get_thumbnail_object` in `StorageService` or just use cloned struct hack again.
+    let mut storage_for_thumb = state.storage.clone();
+    storage_for_thumb.bucket = state.config.minio_bucket_thumbnails.clone();
+    
+    match storage_for_thumb.get_object(&key).await {
+        Ok(bytes) => {
+            // Determine content type
+            let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
+            
+            ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
+        },
+        Err(e) => {
+            tracing::error!("Failed to fetch thumbnail {}: {}", key, e);
+            ApiError("Thumbnail not found in storage".to_string(), StatusCode::NOT_FOUND).into_response()
+        }
+    }
+}
+
 // --- UPDATE & DELETE HANDLERS ---
 
 #[utoipa::path(
