@@ -50,8 +50,8 @@ pub async fn auth_middleware(
     }
 
     // 3. Verify JWT
-    // TODO: Move secret to config
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
+    // Use secret from config
+    let secret = &state.config.jwt_secret;
     
     let claims = decode::<TokenClaims>(
         &token,

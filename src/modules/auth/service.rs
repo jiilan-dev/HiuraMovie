@@ -65,7 +65,8 @@ impl AuthService {
             .map_err(|_| anyhow!("Invalid credentials"))?;
 
         // Generate tokens
-        let access_token = Self::create_access_token(user.id, user.role.clone())?;
+        // Use secret from config
+        let access_token = Self::create_access_token(user.id, user.role.clone(), &state.config.jwt_secret)?;
         // Format: user_id:random_uuid
         let refresh_token = format!("{}:{}", user.id, Uuid::new_v4());
         tracing::info!("Generated refresh token for user {}: {}", user.id, refresh_token);
@@ -153,7 +154,8 @@ impl AuthService {
         )
         .await?;
 
-        let access_token = Self::create_access_token(user.id, user.role.clone())?;
+        // Use secret from config
+        let access_token = Self::create_access_token(user.id, user.role.clone(), &state.config.jwt_secret)?;
         
         let user_response = UserResponse {
             id: user.id,
@@ -172,7 +174,7 @@ impl AuthService {
         ))
     }
 
-    fn create_access_token(user_id: Uuid, role: UserRole) -> Result<String> {
+    fn create_access_token(user_id: Uuid, role: UserRole, secret: &str) -> Result<String> {
         let expiration = get_current_timestamp() as usize + 15 * 60; // 15 minutes
         
         let claims = TokenClaims {
@@ -181,9 +183,6 @@ impl AuthService {
             exp: expiration,
             iat: get_current_timestamp() as usize,
         };
-
-        // TODO: Move secret to config
-        let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
         
         encode(
             &Header::default(),

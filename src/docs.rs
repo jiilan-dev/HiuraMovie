@@ -9,12 +9,23 @@ use crate::modules::auth::handler::*;
         crate::modules::auth::handler::login,
         crate::modules::auth::handler::logout,
         crate::modules::auth::handler::refresh,
+        crate::modules::genre::handler::list_genres,
+        crate::modules::genre::handler::create_genre,
+        crate::modules::genre::handler::get_genre,
+        crate::modules::genre::handler::update_genre,
+        crate::modules::genre::handler::delete_genre,
     ),
     components(
-        schemas(RegisterRequest, LoginRequest, AuthResponse, UserResponse)
+        schemas(
+            RegisterRequest, LoginRequest, AuthResponse, UserResponse,
+            crate::modules::genre::dto::CreateGenreRequest,
+            crate::modules::genre::dto::UpdateGenreRequest,
+            crate::modules::genre::dto::GenreResponse,
+        )
     ),
     tags(
-        (name = "Auth", description = "Authentication endpoints")
+        (name = "Auth", description = "Authentication endpoints"),
+        (name = "Content", description = "Video Content Management")
     ),
     security(
         ("bearer_auth" = [])

@@ -85,7 +85,7 @@ Server will be running at `http://localhost:3000`
 
 ## 🛠 Features (In Progress)
 
-- [ ] **Authentication**: Secure Login/Register with JWT.
+- [x] **Authentication**: Secure Login/Register with JWT.
 - [ ] **Video Streaming**: HTTP Range requests for seeking support (`axum-range`).
 - [ ] **Transcoding**: Background jobs to convert uploads to HLS/DASH.
 - [ ] **Watch History**: Tracking playback progress with Redis.
