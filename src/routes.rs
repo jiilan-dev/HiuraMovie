@@ -9,7 +9,8 @@ pub fn configure_routes(state: AppState) -> Router<AppState> {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .nest("/api/v1", api_routes())
         .nest("/api/v1/auth", crate::modules::auth::router(state.clone()))
-        .nest("/api/v1/genres", crate::modules::genre::router(state))
+        .nest("/api/v1/genres", crate::modules::genre::router(state.clone()))
+        .nest("/api/v1", crate::modules::content::router(state))
 }
 
 fn api_routes() -> Router<AppState> {

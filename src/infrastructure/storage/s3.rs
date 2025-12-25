@@ -34,4 +34,79 @@ impl StorageService {
             bucket: bucket.to_string(),
         }
     }
+
+    pub async fn create_multipart_upload(&self, key: &str, content_type: &str) -> Result<String, aws_sdk_s3::Error> {
+        let result = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .send()
+            .await?;
+
+        Ok(result.upload_id.unwrap())
+    }
+
+    pub async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        part_number: i32,
+        body: bytes::Bytes,
+    ) -> Result<aws_sdk_s3::types::CompletedPart, aws_sdk_s3::Error> {
+        let result = self
+            .client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(aws_sdk_s3::primitives::ByteStream::from(body))
+            .send()
+            .await?;
+
+        Ok(aws_sdk_s3::types::CompletedPart::builder()
+            .e_tag(result.e_tag.unwrap())
+            .part_number(part_number)
+            .build())
+    }
+
+    pub async fn complete_multipart_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+        parts: Vec<aws_sdk_s3::types::CompletedPart>,
+    ) -> Result<String, aws_sdk_s3::Error> {
+        let completed_multipart_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(parts))
+            .build();
+
+        self.client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .multipart_upload(completed_multipart_upload)
+            .send()
+            .await?;
+
+        Ok(format!("{}/{}", self.bucket, key))
+    }
+
+    pub async fn abort_multipart_upload(
+        &self,
+        key: &str,
+        upload_id: &str,
+    ) -> Result<(), aws_sdk_s3::Error> {
+        self.client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await?;
+
+        Ok(())
+    }
 }
