@@ -4,6 +4,7 @@ use tracing::info;
 mod app;
 mod common;
 mod config;
+mod docs;
 mod infrastructure;
 mod middleware;
 mod modules;

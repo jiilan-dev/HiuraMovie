@@ -1,0 +1,67 @@
+use crate::modules::auth::dto::TokenClaims;
+use crate::state::AppState;
+use axum::{
+    extract::{Request, State},
+    http::{header, StatusCode},
+    middleware::Next,
+    response::Response,
+};
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use redis::AsyncCommands;
+
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // 1. Extract token from header
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|auth_header| auth_header.to_str().ok())
+        .and_then(|auth_value| {
+            if auth_value.starts_with("Bearer ") {
+                Some(auth_value[7..].to_owned())
+            } else {
+                None
+            }
+        });
+
+    let token = match token {
+        Some(t) => t,
+        None => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+    // 2. Check if token is blocked in Redis
+    let mut redis = state
+        .redis
+        .get_conn()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let is_blocked: bool = redis
+        .exists(format!("blocked_token:{}", token))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if is_blocked {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // 3. Verify JWT
+    // TODO: Move secret to config
+    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
+    
+    let claims = decode::<TokenClaims>(
+        &token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| StatusCode::UNAUTHORIZED)?
+    .claims;
+
+    // 4. Inject claims into request extensions
+    req.extensions_mut().insert(claims);
+
+    Ok(next.run(req).await)
+}
