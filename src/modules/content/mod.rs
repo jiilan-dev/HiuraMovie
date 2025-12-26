@@ -5,6 +5,7 @@ use axum::middleware;
 
 pub mod handler;
 pub mod stream_handler; // Added
+pub mod events;
 pub mod dto;
 pub mod model;
 pub mod repository;
@@ -34,6 +35,8 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
         
         .route("/episodes", post(handler::create_episode))
         .route("/episodes/{id}", axum::routing::put(handler::update_episode).delete(handler::delete_episode))
+        .route("/episodes/{id}/upload", post(handler::upload_episode_video))
+        .route("/episodes/{id}/upload-thumbnail", post(handler::upload_episode_thumbnail))
         .route_layer(middleware::from_fn(crate::middleware::role::admin_guard))
         .route_layer(middleware::from_fn_with_state(
             state,

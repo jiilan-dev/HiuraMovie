@@ -10,11 +10,13 @@ mod middleware;
 mod modules;
 mod routes;
 mod state;
+mod workers;
 
 use config::settings::AppConfig;
 use infrastructure::db::pool::connect_to_db;
 use infrastructure::redis::client::RedisService;
 use infrastructure::storage::s3::StorageService;
+use infrastructure::queue::rabbitmq::RabbitMqService;
 use state::AppState;
 
 #[tokio::main]
@@ -63,10 +65,21 @@ async fn main() {
         }
     }
 
-    // 5. Create App State
-    let state = AppState::new(config.clone(), db_pool, redis_service, storage_service);
+    // 5. Connect to RabbitMQ
+    let queue_service = RabbitMqService::new(&config.rabbitmq_url)
+        .await
+        .expect("Failed to connect to RabbitMQ");
 
-    // 6. Start Server
+    // 6. Create App State
+    let state = AppState::new(config.clone(), db_pool, redis_service, storage_service, queue_service);
+
+    // 7. Start Workers
+    let worker_state = state.clone();
+    tokio::spawn(async move {
+        workers::transcoder::start_transcoder_worker(worker_state).await;
+    });
+
+    // 8. Start Server
     let app = app::create_app(state).await;
     
     let addr = format!("0.0.0.0:{}", config.server_port);

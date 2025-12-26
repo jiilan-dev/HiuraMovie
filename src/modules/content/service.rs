@@ -6,6 +6,7 @@ use super::dto::{
 use super::repository::ContentRepository;
 use crate::modules::genre::dto::GenreResponse;
 use crate::state::AppState;
+use crate::modules::content::events::TranscodeJob;
 use anyhow::{Result, anyhow};
 use uuid::Uuid;
 // use slug::slugify; // Removed unused import
@@ -204,16 +205,21 @@ impl ContentService {
    // ... previous methods ...
 
     // --- MOVIE UPDATES ---
-    pub async fn complete_movie_upload(state: AppState, id: Uuid, video_key: String) -> Result<()> {
-        let video_url = video_key; // In a real app with CDN, this would be full URL. For now relative key.
+    pub async fn initiate_movie_processing(state: AppState, id: Uuid, video_key: String) -> Result<()> {
+        let video_url = video_key.clone();
         
-        sqlx::query!(
-            "UPDATE movies SET video_url = $1, status = 'READY', updated_at = NOW() WHERE id = $2",
-            video_url,
-            id
-        )
-        .execute(&state.db)
-        .await?;
+        // 1. Update DB to PROCESSING
+        ContentRepository::update_movie_video_url(&state.db, id, &video_url, "PROCESSING").await?;
+        
+        // 2. Publish Transcode Job
+        let job = TranscodeJob {
+            content_id: id,
+            content_type: "movie".to_string(), // Matches check in worker
+            s3_key: video_key,
+        };
+        
+        let payload = serde_json::to_vec(&job)?;
+        state.queue.publish("transcoding_tasks", &payload).await?;
         
         Ok(())
     }
@@ -314,5 +320,30 @@ impl ContentService {
 
     pub async fn delete_season(state: AppState, id: Uuid) -> Result<()> {
         ContentRepository::delete_season(&state.db, id).await
+    }
+    
+    // --- EPISODE UPLOADS ---
+    
+    pub async fn initiate_episode_processing(state: AppState, id: Uuid, video_key: String) -> Result<()> {
+        let video_url = video_key.clone();
+        // 1. Update DB to PROCESSING
+        ContentRepository::update_episode_video_url(&state.db, id, &video_url, "PROCESSING").await?;
+        
+        // 2. Publish Transcode Job
+        let job = TranscodeJob {
+            content_id: id,
+            content_type: "episode".to_string(),
+            s3_key: video_key,
+        };
+        
+        let payload = serde_json::to_vec(&job)?;
+        state.queue.publish("transcoding_tasks", &payload).await?;
+        
+        Ok(())
+    }
+    
+    pub async fn complete_episode_thumbnail_upload(state: AppState, id: Uuid, thumbnail_key: String) -> Result<()> {
+        let thumbnail_url = thumbnail_key;
+        ContentRepository::update_episode_thumbnail_url(&state.db, id, &thumbnail_url).await
     }
 }

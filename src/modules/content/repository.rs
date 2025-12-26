@@ -40,10 +40,12 @@ impl ContentRepository {
         pool: &PgPool,
         id: Uuid,
         video_url: &str,
+        status: &str,
     ) -> Result<()> {
         sqlx::query!(
-            "UPDATE movies SET video_url = $1, status = 'READY', updated_at = NOW() WHERE id = $2",
+            "UPDATE movies SET video_url = $1, status = $2, updated_at = NOW() WHERE id = $3",
             video_url,
+            status,
             id
         )
         .execute(pool)
@@ -227,6 +229,17 @@ impl ContentRepository {
         .fetch_optional(pool)
         .await?;
         Ok(season)
+    }
+
+    pub async fn get_episode_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Episode>> {
+        let episode = sqlx::query_as!(
+            Episode,
+            "SELECT * FROM episodes WHERE id = $1",
+            id
+        )
+        .fetch_optional(pool)
+        .await?;
+        Ok(episode)
     }
 
     // --- EPISODES ---
@@ -416,6 +429,38 @@ impl ContentRepository {
         sqlx::query!("DELETE FROM episodes WHERE id = $1", id)
             .execute(pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn update_episode_video_url(
+        pool: &PgPool,
+        id: Uuid,
+        video_url: &str,
+        status: &str,
+    ) -> Result<()> {
+        sqlx::query!(
+            "UPDATE episodes SET video_url = $1, status = $2, updated_at = NOW() WHERE id = $3",
+            video_url,
+            status,
+            id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_episode_thumbnail_url(
+        pool: &PgPool,
+        id: Uuid,
+        thumbnail_url: &str,
+    ) -> Result<()> {
+        sqlx::query!(
+            "UPDATE episodes SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2",
+            thumbnail_url,
+            id
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 

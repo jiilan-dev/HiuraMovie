@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub minio_access_key: String,
     pub minio_secret_key: String,
     pub jwt_secret: String,
+    pub rabbitmq_url: String,
 }
 
 impl AppConfig {
@@ -26,6 +27,7 @@ impl AppConfig {
             minio_access_key: env::get(EnvKey::MinioAccessKey)?,
             minio_secret_key: env::get(EnvKey::MinioSecretKey)?,
             jwt_secret: env::get(EnvKey::JwtSecret)?,
+            rabbitmq_url: env::get(EnvKey::RabbitMqUrl).unwrap_or("amqp://guest:guest@localhost:5672".to_string()),
         })
     }
 }

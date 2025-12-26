@@ -234,7 +234,7 @@ pub async fn upload_movie_video(
                 Ok(_url) => {
                     // 3. Update DB (Using Service)
                     // We store the RELATIVE KEY in the DB for portability
-                    if let Err(e) = ContentService::complete_movie_upload(state.clone(), id, key).await {
+                    if let Err(e) = ContentService::initiate_movie_processing(state.clone(), id, key).await {
                          return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response();
                     }
 
@@ -556,4 +556,130 @@ pub async fn delete_episode(
         Ok(_) => ApiSuccess(ApiResponse::success((), "Episode deleted").into(), StatusCode::OK).into_response(),
         Err(e) => ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
     }
+}
+
+/// Upload Episode Video
+#[utoipa::path(
+    post,
+    path = "/api/v1/episodes/{id}/upload",
+    params(
+        ("id" = Uuid, Path, description = "Episode ID")
+    ),
+    request_body(content = String, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "Upload successful", body = ApiResponse<String>),
+        (status = 400, description = "Bad Request"),
+        (status = 404, description = "Episode not found"),
+        (status = 500, description = "Internal Server Error")
+    ),
+    tag = "Content",
+    security(("bearer_auth" = []))
+)]
+pub async fn upload_episode_video(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+    
+    let exists = ContentRepository::get_episode_by_id(&state.db, id).await;
+    match exists {
+        Ok(Some(_)) => {},
+        Ok(None) => return ApiError("Episode not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+        Err(e) => return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
+    }
+
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+        
+        if name == "video" {
+            let file_name = field.file_name().unwrap_or("video.mp4").to_string();
+            info!("Starting upload for episode {}: {}", id, file_name);
+
+            let key = format!("episodes/{}/master_{}", id, file_name);
+            
+            match stream_to_s3(&state.storage, field, key.clone()).await {
+                Ok(_url) => {
+                    if let Err(e) = ContentService::initiate_episode_processing(state.clone(), id, key).await {
+                         return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                    }
+
+                    return ApiSuccess(
+                        ApiResponse::success(_url, "Episode video uploaded successfully"),
+                        StatusCode::OK
+                    ).into_response();
+                },
+                Err(e) => {
+                    return ApiError(format!("Upload failed: {}", e), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+        }
+    }
+
+    ApiError("No video field found in multipart request".to_string(), StatusCode::BAD_REQUEST).into_response()
+}
+
+/// Upload Episode Thumbnail
+#[utoipa::path(
+    post,
+    path = "/api/v1/episodes/{id}/upload-thumbnail",
+    params(
+        ("id" = Uuid, Path, description = "Episode ID")
+    ),
+    request_body(content = String, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "Upload successful", body = ApiResponse<String>),
+        (status = 400, description = "Bad Request"),
+        (status = 404, description = "Episode not found"),
+        (status = 500, description = "Internal Server Error")
+    ),
+    tag = "Content",
+    security(("bearer_auth" = []))
+)]
+pub async fn upload_episode_thumbnail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+    
+    let exists = ContentRepository::get_episode_by_id(&state.db, id).await;
+    match exists {
+        Ok(Some(_)) => {},
+        Ok(None) => return ApiError("Episode not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+        Err(e) => return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
+    }
+
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+        
+        if name == "thumbnail" {
+            let file_name = field.file_name().unwrap_or("thumb.jpg").to_string();
+            info!("Starting thumbnail upload for episode {}: {}", id, file_name);
+
+            let extension = std::path::Path::new(&file_name).extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let key = format!("episodes/{}/thumbnail.{}", id, extension);
+            
+            let mut storage_for_thumb = state.storage.clone();
+            storage_for_thumb.bucket = state.config.minio_bucket_thumbnails.clone();
+
+            match stream_to_s3(&storage_for_thumb, field, key.clone()).await {
+                Ok(_url) => {
+                    if let Err(e) = ContentService::complete_episode_thumbnail_upload(state.clone(), id, key).await {
+                         return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                    }
+
+                    return ApiSuccess(
+                        ApiResponse::success(_url, "Episode thumbnail uploaded successfully"),
+                        StatusCode::OK
+                    ).into_response();
+                },
+                Err(e) => {
+                    return ApiError(format!("Upload failed: {}", e), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+        }
+    }
+
+    ApiError("No thumbnail field found in multipart request".to_string(), StatusCode::BAD_REQUEST).into_response()
 }

@@ -11,6 +11,7 @@ pub enum EnvKey {
     MinioAccessKey,
     MinioSecretKey,
     JwtSecret,
+    RabbitMqUrl,
 }
 
 impl EnvKey {
@@ -25,6 +26,7 @@ impl EnvKey {
             EnvKey::MinioAccessKey => "AWS_ACCESS_KEY_ID",
             EnvKey::MinioSecretKey => "AWS_SECRET_ACCESS_KEY",
             EnvKey::JwtSecret => "JWT_SECRET",
+            EnvKey::RabbitMqUrl => "RABBITMQ_URL",
         }
     }
 }

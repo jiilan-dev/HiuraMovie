@@ -42,6 +42,7 @@ pub struct Movie {
     pub description: Option<String>,
     pub video_url: Option<String>,
     pub thumbnail_url: Option<String>,
+    pub subtitle_url: Option<String>,
     pub release_year: Option<i32>,
     pub duration_seconds: Option<i32>,
     pub rating: Option<f64>, // Changed from f32 to f64 for Postgres compatibility
@@ -89,6 +90,7 @@ pub struct Episode {
     pub description: Option<String>,
     pub video_url: Option<String>,
     pub thumbnail_url: Option<String>,
+    pub subtitle_url: Option<String>,
     pub duration_seconds: Option<i32>,
     pub views: Option<i32>,
     pub status: Option<String>,
