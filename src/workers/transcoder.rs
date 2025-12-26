@@ -3,7 +3,7 @@ use crate::state::AppState;
 use futures_util::StreamExt;
 use lapin::options::{BasicAckOptions, BasicConsumeOptions, QueueDeclareOptions};
 use lapin::types::FieldTable;
-use std::process::Command;
+use tokio::process::Command;
 use tracing::{error, info};
 use std::fs;
 
@@ -88,28 +88,26 @@ async fn process_job(state: &AppState, job: &TranscodeJob) -> anyhow::Result<()>
     info!("Processing job: {:?}", job);
     
     // 1. Download file
-    info!("⬇️ Downloading file from S3: {}", job.s3_key);
-    let file_data = state.storage.get_object(&job.s3_key).await
-        .map_err(|e| anyhow::anyhow!("Failed to download from S3: {}", e))?;
-    
-    info!("⬇️ Downloaded {} bytes", file_data.len());
-        
+    // 1. Download file
     let input_path = format!("/tmp/{}_input.mkv", job.content_id);
-    fs::write(&input_path, &file_data)?;
+    state.storage.download_file(&job.s3_key, &input_path).await
+        .map_err(|e| anyhow::anyhow!("Failed to download from S3: {}", e))?;
     
     // 2. Transcode to MP4
     let output_mp4 = format!("/tmp/{}_output.mp4", job.content_id);
     let status = Command::new("ffmpeg")
         .args(&[
             "-i", &input_path,
+            "-threads", "1", // Limit threads to 1 to prevent OOM/CPU starvation
             "-c:v", "libx264",
-            "-preset", "fast",
+            "-preset", "ultrafast", // Use ultrafast preset for lower CPU usage
             "-c:a", "aac",
             "-strict", "experimental",
             "-y", // overwrite
             &output_mp4
         ])
-        .status()?;
+        .status()
+        .await?;
         
     if !status.success() {
         return Err(anyhow::anyhow!("FFmpeg failed to transcode"));
@@ -122,29 +120,27 @@ async fn process_job(state: &AppState, job: &TranscodeJob) -> anyhow::Result<()>
     let sub_status = Command::new("ffmpeg")
         .args(&[
             "-i", &input_path,
+            "-threads", "1",
             "-map", "0:s:0",
             "-y",
             &output_vtt
         ])
-        .status();
+        .status()
+        .await;
         
     let has_subtitle = sub_status.map(|s| s.success()).unwrap_or(false);
     
     // 4. Upload MP4
     let mp4_key = format!("processed/{}.mp4", job.content_id);
-    let mp4_data = fs::read(&output_mp4)?;
+    // let mp4_data = fs::read(&output_mp4)?; // Removed to save RAM
     
-    // Use low-level S3 upload or add upload_file to StorageService?
-    // StorageService has upload_part logic but not simple put_object wrapper exposed widely?
-    // It has `create_multipart_upload` etc. in common/upload.rs but that's for streaming from Axum.
-    // I should probably add `put_object` to StorageService for simple byte definition.
-    // For now I'll use `storage.client.put_object` directly if pub, or add helper.
-    // StorageService fields are pub.
+    let body = aws_sdk_s3::primitives::ByteStream::from_path(std::path::Path::new(&output_mp4)).await
+        .map_err(|e| anyhow::anyhow!("Failed to read MP4 file: {}", e))?;
     
     state.storage.client.put_object()
         .bucket(&state.storage.bucket)
         .key(&mp4_key)
-        .body(aws_sdk_s3::primitives::ByteStream::from(mp4_data))
+        .body(body)
         .content_type("video/mp4")
         .send()
         .await

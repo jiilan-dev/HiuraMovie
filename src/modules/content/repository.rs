@@ -87,7 +87,7 @@ impl ContentRepository {
             r#"
             INSERT INTO content_genres (movie_id, genre_id)
             SELECT $1, unnest($2::uuid[])
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (movie_id, genre_id) WHERE movie_id IS NOT NULL DO NOTHING
             "#,
             movie_id,
             genre_ids
@@ -149,7 +149,7 @@ impl ContentRepository {
             r#"
             INSERT INTO content_genres (series_id, genre_id)
             SELECT $1, unnest($2::uuid[])
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (series_id, genre_id) WHERE series_id IS NOT NULL DO NOTHING
             "#,
             series_id,
             genre_ids

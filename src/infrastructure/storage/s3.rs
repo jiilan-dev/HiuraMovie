@@ -1,6 +1,7 @@
 use aws_sdk_s3::{Client, config::Region, config::Credentials, config::BehaviorVersion};
 use aws_sdk_s3::config::Builder;
 use tracing::info;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Clone)]
 pub struct StorageService {
@@ -164,5 +165,27 @@ impl StorageService {
 
         let data = result.body.collect().await.map(|d| d.into_bytes().to_vec()).unwrap_or_default();
         Ok(data)
+    }
+
+    pub async fn download_file(&self, key: &str, file_path: &str) -> Result<(), anyhow::Error> {
+        let mut result = self.client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("S3 GetObject Error: {}", e))?;
+
+        let mut file = tokio::fs::File::create(file_path).await
+            .map_err(|e| anyhow::anyhow!("Failed to create file: {}", e))?;
+        
+        while let Some(chunk) = result.body.next().await {
+            let data = chunk.map_err(|e| anyhow::anyhow!("S3 Stream Error: {}", e))?;
+            file.write_all(&data).await
+                .map_err(|e| anyhow::anyhow!("Write Error: {}", e))?;
+        }
+        
+        file.flush().await?;
+        Ok(())
     }
 }
