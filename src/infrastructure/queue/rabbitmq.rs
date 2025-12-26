@@ -5,16 +5,17 @@ use lapin::{
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct RabbitMqService {
+    url: String,
     conn: Arc<Mutex<Connection>>,
     channel: Arc<Mutex<Channel>>,
 }
 
 impl RabbitMqService {
-    pub async fn new(url: &str) -> Result<Self> {
+    async fn connect(url: &str) -> Result<(Connection, Channel)> {
         info!("Connecting to RabbitMQ at {}", url);
         let conn = Connection::connect(url, ConnectionProperties::default())
             .await
@@ -26,14 +27,28 @@ impl RabbitMqService {
             .map_err(|e| anyhow!("Failed to create channel: {}", e))?;
 
         info!("Connected to RabbitMQ");
+        Ok((conn, channel))
+    }
+
+    pub async fn new(url: &str) -> Result<Self> {
+        let (conn, channel) = Self::connect(url).await?;
 
         Ok(Self {
+            url: url.to_string(),
             conn: Arc::new(Mutex::new(conn)),
             channel: Arc::new(Mutex::new(channel)),
         })
     }
 
-    pub async fn publish(&self, queue: &str, payload: &[u8]) -> Result<()> {
+    async fn reconnect(&self) -> Result<()> {
+        warn!("RabbitMQ connection dropped, reconnecting...");
+        let (conn, channel) = Self::connect(&self.url).await?;
+        *self.conn.lock().await = conn;
+        *self.channel.lock().await = channel;
+        Ok(())
+    }
+
+    async fn publish_internal(&self, queue: &str, payload: &[u8]) -> Result<()> {
         let channel = self.channel.lock().await;
 
         // Ensure queue exists
@@ -61,6 +76,16 @@ impl RabbitMqService {
             .map_err(|e| anyhow!("Failed to publish message: {}", e))?
             .await
             .map_err(|e| anyhow!("Failed to confirm publication: {}", e))?;
+
+        Ok(())
+    }
+
+    pub async fn publish(&self, queue: &str, payload: &[u8]) -> Result<()> {
+        if let Err(e) = self.publish_internal(queue, payload).await {
+            warn!("RabbitMQ publish failed: {}. Retrying after reconnect.", e);
+            self.reconnect().await?;
+            self.publish_internal(queue, payload).await?;
+        }
 
         Ok(())
     }

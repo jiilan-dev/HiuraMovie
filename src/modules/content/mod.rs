@@ -16,6 +16,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
     let public_routes = Router::new()
         .route("/movies", axum::routing::get(handler::list_movies))
         .route("/movies/{id}", axum::routing::get(handler::get_movie))
+        .route("/movies/{id}/progress", axum::routing::get(handler::get_movie_transcode_progress))
         .route("/movies/{id}/stream", axum::routing::get(stream_handler::stream_movie))
         .route("/movies/{id}/thumbnail", axum::routing::get(handler::get_movie_thumbnail))
         .route("/series", axum::routing::get(handler::list_series))

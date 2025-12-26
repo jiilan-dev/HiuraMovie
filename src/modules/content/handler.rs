@@ -9,6 +9,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use redis::AsyncCommands;
 use tracing::info;
 use uuid::Uuid;
 
@@ -73,6 +74,38 @@ pub async fn get_movie(
         Ok(res) => ApiSuccess(ApiResponse::success(res, "Movie retrieved successfully").into(), StatusCode::OK).into_response(),
         Err(e) => ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/movies/{id}/progress",
+    params(
+        ("id" = Uuid, Path, description = "Movie ID")
+    ),
+    responses(
+        (status = 200, description = "Transcode progress", body = ApiResponse<u8>)
+    ),
+    tag = "Content"
+)]
+pub async fn get_movie_transcode_progress(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let key = format!("transcode_progress:movie:{}", id);
+    let progress = match state.redis.get_conn().await {
+        Ok(mut conn) => conn.get::<_, Option<u8>>(key).await.unwrap_or(Some(0)),
+        Err(e) => {
+            tracing::warn!("Failed to read transcode progress from Redis: {}", e);
+            Some(0)
+        }
+    }
+    .unwrap_or(0);
+
+    ApiSuccess(
+        ApiResponse::success(progress, "Transcode progress"),
+        StatusCode::OK,
+    )
+    .into_response()
 }
 
 // --- SERIES HANDLERS ---
