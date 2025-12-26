@@ -1,15 +1,18 @@
+use crate::infrastructure::storage::s3::StorageService;
 use crate::modules::content::events::TranscodeJob;
 use crate::state::AppState;
+use bytes::Bytes;
 use futures_util::StreamExt;
 use lapin::options::{BasicAckOptions, BasicConsumeOptions, QueueDeclareOptions};
 use lapin::types::FieldTable;
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use std::process::Stdio;
 use tracing::{error, info, warn};
 use redis::AsyncCommands;
 use std::fs;
+use tokio::fs as tokio_fs;
 
 
 pub async fn start_transcoder_worker(state: AppState) {
@@ -36,6 +39,9 @@ pub async fn start_transcoder_worker(state: AppState) {
             Err(e) => {
                 error!("Failed to declare queue '{}': {}", queue_name, e);
                 drop(channel_guard);
+                if let Err(err) = state.queue.reconnect().await {
+                    warn!("Failed to reconnect RabbitMQ after declare error: {}", err);
+                }
                 sleep(Duration::from_secs(2)).await;
                 continue;
             }
@@ -54,6 +60,9 @@ pub async fn start_transcoder_worker(state: AppState) {
             Err(e) => {
                 error!("Failed to create consumer: {}", e);
                 drop(channel_guard);
+                if let Err(err) = state.queue.reconnect().await {
+                    warn!("Failed to reconnect RabbitMQ after consume error: {}", err);
+                }
                 sleep(Duration::from_secs(2)).await;
                 continue;
             }
@@ -98,6 +107,9 @@ pub async fn start_transcoder_worker(state: AppState) {
         }
 
         warn!("Transcoder consumer stopped, retrying in 2s...");
+        if let Err(err) = state.queue.reconnect().await {
+            warn!("Failed to reconnect RabbitMQ after consumer stop: {}", err);
+        }
         sleep(Duration::from_secs(2)).await;
     }
 }
@@ -156,19 +168,14 @@ async fn process_job(state: &AppState, job: &TranscodeJob) -> anyhow::Result<()>
     
     // 4. Upload MP4
     let mp4_key = format!("processed/{}.mp4", job.content_id);
-    // let mp4_data = fs::read(&output_mp4)?; // Removed to save RAM
-    
-    let body = aws_sdk_s3::primitives::ByteStream::from_path(std::path::Path::new(&output_mp4)).await
-        .map_err(|e| anyhow::anyhow!("Failed to read MP4 file: {}", e))?;
-    
-    state.storage.client.put_object()
-        .bucket(&state.storage.bucket)
-        .key(&mp4_key)
-        .body(body)
-        .content_type("video/mp4")
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to upload MP4: {}", e))?;
+    upload_file_multipart_with_retry(
+        &state.storage,
+        &mp4_key,
+        &output_mp4,
+        "video/mp4",
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to upload MP4: {}", e))?;
         
     // 5. Upload VTT (if exists)
     let mut vtt_key_opt: Option<String> = None;
@@ -298,7 +305,7 @@ async fn transcode_with_progress(
             "-hide_banner",
             "-loglevel", "error",
             "-i", input_path,
-            "-threads", "1",
+            "-threads", "0",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-c:a", "aac",
@@ -338,6 +345,146 @@ async fn transcode_with_progress(
     if !status.success() {
         return Err(anyhow::anyhow!("FFmpeg failed to transcode"));
     }
+
+    Ok(())
+}
+
+async fn upload_file_multipart_with_retry(
+    storage: &StorageService,
+    key: &str,
+    file_path: &str,
+    content_type: &str,
+) -> anyhow::Result<()> {
+    let mut attempt = 0;
+    let max_retries = 3;
+
+    loop {
+        attempt += 1;
+        match upload_file_multipart(storage, key, file_path, content_type).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt >= max_retries {
+                    return Err(e);
+                }
+                warn!(
+                    "Upload failed for '{}' (attempt {}/{}): {:?}",
+                    key,
+                    attempt,
+                    max_retries,
+                    e
+                );
+                sleep(Duration::from_millis(500 * attempt as u64)).await;
+            }
+        }
+    }
+}
+
+async fn upload_file_simple(
+    storage: &StorageService,
+    key: &str,
+    file_path: &str,
+    content_type: &str,
+    content_length: u64,
+) -> anyhow::Result<()> {
+    let body = aws_sdk_s3::primitives::ByteStream::from_path(std::path::Path::new(file_path))
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read output file: {}", e))?;
+
+    storage
+        .client
+        .put_object()
+        .bucket(&storage.bucket)
+        .key(key)
+        .body(body)
+        .content_type(content_type)
+        .content_length(content_length as i64)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to upload file: {:?}", e))?;
+
+    Ok(())
+}
+
+async fn upload_file_multipart(
+    storage: &StorageService,
+    key: &str,
+    file_path: &str,
+    content_type: &str,
+) -> anyhow::Result<()> {
+    const PART_SIZE: usize = 6 * 1024 * 1024;
+    const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
+
+    let meta = tokio_fs::metadata(file_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read output metadata: {}", e))?;
+    if meta.len() == 0 {
+        return Err(anyhow::anyhow!("Output file is empty"));
+    }
+    if meta.len() < MIN_PART_SIZE {
+        return upload_file_simple(storage, key, file_path, content_type, meta.len()).await;
+    }
+
+    let upload_id = storage
+        .create_multipart_upload(key, content_type)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to initiate multipart upload: {}", e))?;
+
+    let mut parts = Vec::new();
+    let mut part_number: i32 = 1;
+    let mut file = tokio_fs::File::open(file_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to open output file: {}", e))?;
+    let mut chunk = Vec::with_capacity(PART_SIZE);
+    let mut read_buf = [0u8; 64 * 1024];
+
+    let result: anyhow::Result<()> = async {
+        loop {
+            let read = file
+                .read(&mut read_buf)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read output file: {}", e))?;
+
+            if read == 0 {
+                break;
+            }
+
+            chunk.extend_from_slice(&read_buf[..read]);
+
+            if chunk.len() >= PART_SIZE {
+                let body = Bytes::copy_from_slice(&chunk);
+                let part = storage
+                    .upload_part(key, &upload_id, part_number, body)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to upload part {}: {}", part_number, e))?;
+
+                parts.push(part);
+                part_number += 1;
+                chunk.clear();
+            }
+        }
+
+        if !chunk.is_empty() {
+            let body = Bytes::copy_from_slice(&chunk);
+            let part = storage
+                .upload_part(key, &upload_id, part_number, body)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to upload part {}: {}", part_number, e))?;
+
+            parts.push(part);
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        let _ = storage.abort_multipart_upload(key, &upload_id).await;
+        return Err(err);
+    }
+
+    storage
+        .complete_multipart_upload(key, &upload_id, parts)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to complete multipart upload: {}", e))?;
 
     Ok(())
 }

@@ -1,7 +1,10 @@
 use aws_sdk_s3::{Client, config::Region, config::Credentials, config::BehaviorVersion};
 use aws_sdk_s3::config::Builder;
-use tracing::info;
+use futures_util::StreamExt;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
+use tokio::time::{sleep, Duration};
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct StorageService {
@@ -168,24 +171,86 @@ impl StorageService {
     }
 
     pub async fn download_file(&self, key: &str, file_path: &str) -> Result<(), anyhow::Error> {
-        let mut result = self.client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("S3 GetObject Error: {}", e))?;
+        let max_retries = 3;
+        let mut attempt = 0;
+        let mut downloaded: u64 = 0;
 
-        let mut file = tokio::fs::File::create(file_path).await
-            .map_err(|e| anyhow::anyhow!("Failed to create file: {}", e))?;
-        
-        while let Some(chunk) = result.body.next().await {
-            let data = chunk.map_err(|e| anyhow::anyhow!("S3 Stream Error: {}", e))?;
-            file.write_all(&data).await
-                .map_err(|e| anyhow::anyhow!("Write Error: {}", e))?;
+        loop {
+            attempt += 1;
+
+            let mut request = self.client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(key);
+
+            if downloaded > 0 {
+                request = request.range(format!("bytes={}-", downloaded));
+            }
+
+            let mut result = match request.send().await {
+                Ok(res) => res,
+                Err(e) => {
+                    if attempt >= max_retries {
+                        return Err(anyhow::anyhow!("S3 GetObject Error: {}", e));
+                    }
+                    warn!(
+                        "S3 GetObject failed for '{}' (attempt {}/{}): {}",
+                        key,
+                        attempt,
+                        max_retries,
+                        e
+                    );
+                    sleep(Duration::from_millis(250 * attempt as u64)).await;
+                    continue;
+                }
+            };
+
+            let mut file = if downloaded == 0 {
+                tokio::fs::File::create(file_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to create file: {}", e))?
+            } else {
+                OpenOptions::new()
+                    .append(true)
+                    .open(file_path)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to open file: {}", e))?
+            };
+
+            let mut stream_error: Option<anyhow::Error> = None;
+            while let Some(chunk) = result.body.next().await {
+                match chunk {
+                    Ok(data) => {
+                        file.write_all(&data)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Write Error: {}", e))?;
+                        downloaded += data.len() as u64;
+                    }
+                    Err(e) => {
+                        stream_error = Some(anyhow::anyhow!("S3 Stream Error: {}", e));
+                        break;
+                    }
+                }
+            }
+
+            file.flush().await?;
+
+            if let Some(err) = stream_error {
+                if attempt >= max_retries {
+                    return Err(err);
+                }
+                warn!(
+                    "S3 stream interrupted for '{}' at byte {} (attempt {}/{}), retrying...",
+                    key,
+                    downloaded,
+                    attempt,
+                    max_retries
+                );
+                sleep(Duration::from_millis(250 * attempt as u64)).await;
+                continue;
+            }
+
+            return Ok(());
         }
-        
-        file.flush().await?;
-        Ok(())
     }
 }

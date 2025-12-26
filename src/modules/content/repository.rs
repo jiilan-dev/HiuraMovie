@@ -349,6 +349,21 @@ impl ContentRepository {
         Ok(series)
     }
 
+    pub async fn update_series_thumbnail_url(
+        pool: &PgPool,
+        id: Uuid,
+        thumbnail_url: &str,
+    ) -> Result<()> {
+        sqlx::query!(
+            "UPDATE series SET thumbnail_url = $1, updated_at = NOW() WHERE id = $2",
+            thumbnail_url,
+            id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn delete_series(pool: &PgPool, id: Uuid) -> Result<()> {
         sqlx::query!("DELETE FROM series WHERE id = $1", id)
             .execute(pool)

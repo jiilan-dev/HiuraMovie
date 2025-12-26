@@ -40,7 +40,7 @@ impl RabbitMqService {
         })
     }
 
-    async fn reconnect(&self) -> Result<()> {
+    pub async fn reconnect(&self) -> Result<()> {
         warn!("RabbitMQ connection dropped, reconnecting...");
         let (conn, channel) = Self::connect(&self.url).await?;
         *self.conn.lock().await = conn;
@@ -91,6 +91,17 @@ impl RabbitMqService {
     }
 
     pub async fn get_channel(&self) -> Arc<Mutex<Channel>> {
+        let is_connected = {
+            let channel = self.channel.lock().await;
+            channel.status().connected()
+        };
+
+        if !is_connected {
+            if let Err(e) = self.reconnect().await {
+                warn!("RabbitMQ reconnect failed: {}", e);
+            }
+        }
+
         self.channel.clone()
     }
 }

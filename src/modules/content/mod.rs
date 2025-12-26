@@ -19,8 +19,13 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
         .route("/movies/{id}/progress", axum::routing::get(handler::get_movie_transcode_progress))
         .route("/movies/{id}/stream", axum::routing::get(stream_handler::stream_movie))
         .route("/movies/{id}/thumbnail", axum::routing::get(handler::get_movie_thumbnail))
+        .route("/movies/{id}/subtitle", axum::routing::get(handler::get_movie_subtitle))
+        .route("/episodes/{id}/stream", axum::routing::get(stream_handler::stream_episode))
+        .route("/episodes/{id}/progress", axum::routing::get(handler::get_episode_transcode_progress))
+        .route("/episodes/{id}/subtitle", axum::routing::get(handler::get_episode_subtitle))
         .route("/series", axum::routing::get(handler::list_series))
-        .route("/series/{id}", axum::routing::get(handler::get_series));
+        .route("/series/{id}", axum::routing::get(handler::get_series))
+        .route("/series/{id}/thumbnail", axum::routing::get(handler::get_series_thumbnail));
 
     let protected_routes = Router::new()
         .route("/movies", post(handler::create_movie))
@@ -29,6 +34,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
         .route("/movies/{id}", axum::routing::put(handler::update_movie).delete(handler::delete_movie))
         
         .route("/series", post(handler::create_series))
+        .route("/series/{id}/upload-thumbnail", post(handler::upload_series_thumbnail))
         .route("/series/{id}", axum::routing::put(handler::update_series).delete(handler::delete_series))
         
         .route("/seasons", post(handler::create_season))

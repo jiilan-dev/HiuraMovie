@@ -238,6 +238,11 @@ impl ContentService {
         
         Ok(())
     }
+
+    pub async fn complete_series_thumbnail_upload(state: AppState, id: Uuid, thumbnail_key: String) -> Result<()> {
+        let thumbnail_url = thumbnail_key;
+        ContentRepository::update_series_thumbnail_url(&state.db, id, &thumbnail_url).await
+    }
     pub async fn update_movie(state: AppState, id: Uuid, req: UpdateMovieRequest) -> Result<MovieResponse> {
         let movie = ContentRepository::update_movie(
             &state.db,

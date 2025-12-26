@@ -5,6 +5,7 @@ use crate::modules::content::dto::*;
 use crate::modules::content::service::ContentService;
 use axum::{
     extract::{Path, State, Multipart},
+    http::header,
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -12,6 +13,23 @@ use axum::{
 use redis::AsyncCommands;
 use tracing::info;
 use uuid::Uuid;
+
+fn sanitize_filename(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    if sanitized.is_empty() {
+        "file".to_string()
+    } else {
+        sanitized
+    }
+}
 
 // --- MOVIE HANDLERS ---
 
@@ -106,6 +124,81 @@ pub async fn get_movie_transcode_progress(
         StatusCode::OK,
     )
     .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/episodes/{id}/progress",
+    params(
+        ("id" = Uuid, Path, description = "Episode ID")
+    ),
+    responses(
+        (status = 200, description = "Transcode progress", body = ApiResponse<u8>)
+    ),
+    tag = "Content"
+)]
+pub async fn get_episode_transcode_progress(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let key = format!("transcode_progress:episode:{}", id);
+    let progress = match state.redis.get_conn().await {
+        Ok(mut conn) => conn.get::<_, Option<u8>>(key).await.unwrap_or(Some(0)),
+        Err(e) => {
+            tracing::warn!("Failed to read transcode progress from Redis: {}", e);
+            Some(0)
+        }
+    }
+    .unwrap_or(0);
+
+    ApiSuccess(
+        ApiResponse::success(progress, "Transcode progress"),
+        StatusCode::OK,
+    )
+    .into_response()
+}
+
+/// Get Episode Subtitle (VTT)
+#[utoipa::path(
+    get,
+    path = "/api/v1/episodes/{id}/subtitle",
+    params(("id" = Uuid, Path, description = "Episode ID")),
+    responses(
+        (status = 200, description = "Success", body = Vec<u8>),
+        (status = 404, description = "Not Found")
+    ),
+    tag = "Content"
+)]
+pub async fn get_episode_subtitle(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+
+    let episode_opt = ContentRepository::get_episode_by_id(&state.db, id).await.unwrap_or(None);
+    let episode = match episode_opt {
+        Some(e) => e,
+        None => return ApiError("Episode not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    let key = match episode.subtitle_url {
+        Some(k) => k,
+        None => return ApiError("Episode has no subtitle".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    match state.storage.get_object(&key).await {
+        Ok(bytes) => {
+            let content_type = mime_guess::from_path(&key)
+                .first_raw()
+                .unwrap_or("text/vtt")
+                .to_string();
+            ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch subtitle {}: {}", key, e);
+            ApiError("Subtitle not found in storage".to_string(), StatusCode::NOT_FOUND).into_response()
+        }
+    }
 }
 
 // --- SERIES HANDLERS ---
@@ -260,7 +353,8 @@ pub async fn upload_movie_video(
             let file_name = field.file_name().unwrap_or("video.mp4").to_string();
             info!("Starting upload for movie {}: {}", id, file_name);
 
-            let key = format!("movies/{}/master_{}", id, file_name);
+            let safe_file_name = sanitize_filename(&file_name);
+            let key = format!("movies/{}/master_{}", id, safe_file_name);
             
             // STREAMING UPLOAD
             match stream_to_s3(&state.storage, field, key.clone()).await {
@@ -422,6 +516,163 @@ pub async fn get_movie_thumbnail(
         Err(e) => {
             tracing::error!("Failed to fetch thumbnail {}: {}", key, e);
             ApiError("Thumbnail not found in storage".to_string(), StatusCode::NOT_FOUND).into_response()
+        }
+    }
+}
+
+/// Upload Series Thumbnail
+/// Multipart upload to S3/MinIO (Thumbnails bucket)
+#[utoipa::path(
+    post,
+    path = "/api/v1/series/{id}/upload-thumbnail",
+    params(
+        ("id" = Uuid, Path, description = "Series ID")
+    ),
+    request_body(content = String, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "Upload successful", body = ApiResponse<String>),
+        (status = 400, description = "Bad Request"),
+        (status = 404, description = "Series not found"),
+        (status = 500, description = "Internal Server Error")
+    ),
+    tag = "Content",
+    security(("bearer_auth" = []))
+)]
+pub async fn upload_series_thumbnail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+
+    let exists = ContentRepository::get_series_by_id(&state.db, id).await;
+    match exists {
+        Ok(Some(_)) => {}
+        Ok(None) => return ApiError("Series not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+        Err(e) => return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response(),
+    }
+
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+
+        if name == "thumbnail" {
+            let file_name = field.file_name().unwrap_or("thumb.jpg").to_string();
+            info!("Starting thumbnail upload for series {}: {}", id, file_name);
+
+            let extension = std::path::Path::new(&file_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("jpg");
+            let key = format!("series/{}/thumbnail.{}", id, extension);
+
+            let mut storage_for_thumb = state.storage.clone();
+            storage_for_thumb.bucket = state.config.minio_bucket_thumbnails.clone();
+
+            match stream_to_s3(&storage_for_thumb, field, key.clone()).await {
+                Ok(_url) => {
+                    if let Err(e) = ContentService::complete_series_thumbnail_upload(state.clone(), id, key).await {
+                        return ApiError(e.to_string(), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                    }
+
+                    return ApiSuccess(
+                        ApiResponse::success(_url, "Thumbnail uploaded successfully"),
+                        StatusCode::OK,
+                    )
+                    .into_response();
+                }
+                Err(e) => {
+                    return ApiError(format!("Upload failed: {}", e), StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+        }
+    }
+
+    ApiError("No thumbnail field found in multipart request".to_string(), StatusCode::BAD_REQUEST).into_response()
+}
+
+/// Get Series Thumbnail
+/// Serves the thumbnail image from MinIO
+#[utoipa::path(
+    get,
+    path = "/api/v1/series/{id}/thumbnail",
+    params(("id" = Uuid, Path, description = "Series ID")),
+    responses(
+        (status = 200, description = "Success", body = Vec<u8>),
+        (status = 404, description = "Not Found")
+    ),
+    tag = "Content"
+)]
+pub async fn get_series_thumbnail(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+
+    let series_opt = ContentRepository::get_series_by_id(&state.db, id).await.unwrap_or(None);
+    let series = match series_opt {
+        Some(s) => s,
+        None => return ApiError("Series not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    let key = match series.thumbnail_url {
+        Some(k) => k,
+        None => return ApiError("Series has no thumbnail".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    let mut storage_for_thumb = state.storage.clone();
+    storage_for_thumb.bucket = state.config.minio_bucket_thumbnails.clone();
+
+    match storage_for_thumb.get_object(&key).await {
+        Ok(bytes) => {
+            let content_type = mime_guess::from_path(&key).first_or_octet_stream().to_string();
+            ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch thumbnail {}: {}", key, e);
+            ApiError("Thumbnail not found in storage".to_string(), StatusCode::NOT_FOUND).into_response()
+        }
+    }
+}
+
+/// Get Movie Subtitle (VTT)
+#[utoipa::path(
+    get,
+    path = "/api/v1/movies/{id}/subtitle",
+    params(("id" = Uuid, Path, description = "Movie ID")),
+    responses(
+        (status = 200, description = "Success", body = Vec<u8>),
+        (status = 404, description = "Not Found")
+    ),
+    tag = "Content"
+)]
+pub async fn get_movie_subtitle(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use crate::modules::content::repository::ContentRepository;
+
+    let movie_opt = ContentRepository::get_movie_by_id(&state.db, id).await.unwrap_or(None);
+    let movie = match movie_opt {
+        Some(m) => m,
+        None => return ApiError("Movie not found".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    let key = match movie.subtitle_url {
+        Some(k) => k,
+        None => return ApiError("Movie has no subtitle".to_string(), StatusCode::NOT_FOUND).into_response(),
+    };
+
+    match state.storage.get_object(&key).await {
+        Ok(bytes) => {
+            let content_type = mime_guess::from_path(&key)
+                .first_raw()
+                .unwrap_or("text/vtt")
+                .to_string();
+            ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch subtitle {}: {}", key, e);
+            ApiError("Subtitle not found in storage".to_string(), StatusCode::NOT_FOUND).into_response()
         }
     }
 }
@@ -629,7 +880,8 @@ pub async fn upload_episode_video(
             let file_name = field.file_name().unwrap_or("video.mp4").to_string();
             info!("Starting upload for episode {}: {}", id, file_name);
 
-            let key = format!("episodes/{}/master_{}", id, file_name);
+            let safe_file_name = sanitize_filename(&file_name);
+            let key = format!("episodes/{}/master_{}", id, safe_file_name);
             
             match stream_to_s3(&state.storage, field, key.clone()).await {
                 Ok(_url) => {
